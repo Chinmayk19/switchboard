@@ -3,6 +3,7 @@ import { getDb } from './db.ts';
 import { config } from './config.ts';
 import { change, resetFeed, type Change } from './feed.ts';
 import { initNotes, notes } from './notes.ts';
+import { billingSummaries, canSend, initBilling, resetBilling } from './billing.ts';
 
 export type CarrierStatus = 'sent' | 'delivered' | 'failed';
 export type ReplyStatus = 'queued' | CarrierStatus;
@@ -62,6 +63,7 @@ export function knownWorkspace(value: unknown): value is string {
 export async function initModels() {
   await Promise.all([
     initNotes(),
+    initBilling(),
     inbound.createIndexes([
       { key: { workspace: 1, eventId: 1 }, unique: true },
       { key: { workspace: 1, messageId: 1 }, unique: true },
@@ -92,6 +94,7 @@ export async function storeInbound(message: Inbound) {
 }
 
 export async function queueReply(workspace: string, contact: string, text: string, clientRef: string) {
+  if (!await canSend(workspace)) return false;
   const now = new Date();
   try {
     await replies.updateOne(
@@ -105,6 +108,7 @@ export async function queueReply(workspace: string, contact: string, text: strin
   } catch (error) {
     if (!duplicateKey(error)) throw error;
   }
+  return true;
 }
 
 export async function claimConversation(workspace: string, contact: string, agent: string) {
@@ -214,7 +218,9 @@ interface ContactSnapshot {
 }
 
 export async function snapshot() {
+  const billing = await billingSummaries();
   const result = Object.fromEntries(workspaces.map(workspace => [workspace, {
+    billing: billing.get(workspace) ?? { status: 'none', seats: 0, can_send: true },
     contacts: Object.create(null) as Record<string, ContactSnapshot>,
     outbound: Object.create(null) as Record<string, ReplyStatus>,
   }]));
@@ -236,6 +242,7 @@ export async function snapshot() {
 export async function resetInbox() {
   await Promise.all([inbound.deleteMany({}), conversations.deleteMany({}), replies.deleteMany({}), sendGates.deleteMany({}), notes.deleteMany({})]);
   await resetFeed();
+  await resetBilling();
 }
 
 export interface PageCursor {

@@ -2,6 +2,7 @@
 import { ApiError, endpoint, messageOf, request, type Conversation, type FeedEvent, type Identity, type Message } from './api';
 import { useFeed, usePages } from './hooks';
 import { PrivateNotes } from './PrivateNotes';
+import { Billing } from './Billing';
 import './styles.css';
 
 const contactKey = (item: Conversation) => item.contact;
@@ -52,6 +53,7 @@ export function App() {
   const [error, setError] = useState('');
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
+  const [showBilling, setShowBilling] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -88,6 +90,7 @@ export function App() {
   }
 
   function clearSession() {
+    setShowBilling(false);
     setWorkspace('');
     setIdentity(null);
   }
@@ -110,6 +113,7 @@ export function App() {
     </main>
   );
 
+  const workspaceAdmin = identity.workspaces.some(entry => entry.id === workspace && entry.role === 'admin');
   return (
     <main className="shell">
       <header className="topbar">
@@ -117,15 +121,16 @@ export function App() {
         <div className="account">
           <label className="workspace-control">
             Workspace
-            <select value={workspace} onChange={event => setWorkspace(event.target.value)}>
+            <select value={workspace} onChange={event => { setShowBilling(false); setWorkspace(event.target.value); }}>
               {identity.workspaces.map(({ id }) => <option key={id} value={id}>{workspaceName(id)}</option>)}
             </select>
           </label>
+          {workspaceAdmin && <button type="button" onClick={() => setShowBilling(value => !value)}>{showBilling ? 'Inbox' : 'Billing'}</button>}
           <Profile name={agentName(identity.sub)} busy={loggingOut} error={logoutError} onLogout={logout} />
         </div>
       </header>
-      <Inbox key={workspace} workspace={workspace} agent={identity.sub} onSessionEnded={clearSession}
-        canGenerate={identity.workspaces.some(entry => entry.id === workspace && entry.role === 'admin')} />
+      {showBilling && workspaceAdmin ? <Billing key={workspace} workspace={workspace} /> :
+        <Inbox key={workspace} workspace={workspace} agent={identity.sub} onSessionEnded={clearSession} canGenerate={workspaceAdmin} />}
     </main>
   );
 }

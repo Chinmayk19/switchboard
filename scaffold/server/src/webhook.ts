@@ -8,6 +8,11 @@ export function nonempty(value: unknown): value is string {
 }
 
 export async function receiveWebhook(req: IncomingMessage, signature: string | undefined, eventId: string | undefined) {
+  const body = await readSignedBody(req, signature, config.pigeon.webhookSecret);
+  return typeof body === 'number' ? body : applyWebhook(body, eventId);
+}
+
+export async function readSignedBody(req: IncomingMessage, signature: string | undefined, secret: string) {
   const match = /^t=(\d+),v1=([a-f\d]{64})$/i.exec(signature ?? '');
   if (!match) return 401;
 
@@ -15,7 +20,7 @@ export async function receiveWebhook(req: IncomingMessage, signature: string | u
   const age = Math.floor(Date.now() / 1000) - Number(timestamp);
   if (Math.abs(age) > 300) return 401;
 
-  const hmac = createHmac('sha256', config.pigeon.webhookSecret).update(timestamp + '.');
+  const hmac = createHmac('sha256', secret).update(timestamp + '.');
   const limit = 1024 * 1024;
   const chunks: Buffer[] = [];
   let size = 0;
@@ -26,7 +31,7 @@ export async function receiveWebhook(req: IncomingMessage, signature: string | u
   }
   if (!timingSafeEqual(hmac.digest(), Buffer.from(signatureHex, 'hex'))) return 401;
   if (size > limit) return 413;
-  return applyWebhook(Buffer.concat(chunks), eventId);
+  return Buffer.concat(chunks);
 }
 
 export async function applyWebhook(raw: Buffer, eventId: string | undefined) {

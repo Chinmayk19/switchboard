@@ -251,7 +251,9 @@ test('webhook contract and distributed recovery', { timeout: 60_000 }, async t =
     assert.ok(ready.cursor > 0);
     assert.equal((await grader(second.url, 'reset', {})).status, 200);
     const snapshot = await (await grader(second.url, 'snapshot')).json();
-    for (const tenant of Object.values(snapshot.workspaces)) assert.deepEqual(tenant, { contacts: {}, outbound: {} });
+    for (const tenant of Object.values(snapshot.workspaces)) {
+      assert.deepEqual(tenant, { contacts: {}, outbound: {}, billing: { status: 'none', seats: 0, can_send: true } });
+    }
     assert.equal(await db.collection('feed_events').countDocuments(), 0);
     assert.equal((await webhook(second.url, event({ message_id: 'after-reset', from: contact, text: 'New' }))).status, 204);
     const fresh = await eventually(() => frames[1]);
