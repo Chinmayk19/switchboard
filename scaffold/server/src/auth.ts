@@ -2,7 +2,7 @@ import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import { Router } from 'express';
 import { config } from './config.ts';
 import { getDb } from './db.ts';
-import { route } from './http.ts';
+import { allowedOrigin, route } from './http.ts';
 
 export interface Identity {
   sub: string;
@@ -89,6 +89,17 @@ async function verifyIdentity(token: unknown, issuer: Discovery, nonce: string):
 
 export const auth = Router();
 auth.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
+auth.post('/logout', route(async (req, res) => {
+  if (!allowedOrigin(req.get('origin')) || req.get('sec-fetch-site') === 'cross-site') {
+    res.sendStatus(403);
+    return;
+  }
+  const id = cookie(req.headers.cookie, 'sb_session');
+  if (id) await sessions.deleteOne({ _id: hash(id) });
+  res.clearCookie('sb_session', cookieOptions);
+  res.sendStatus(204);
+}));
 
 auth.get('/login', route(async (_req, res) => {
   const issuer = await discovery();

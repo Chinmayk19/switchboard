@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { config } from './config.ts';
-import { duplicateKey, replies, sendGates, workspaces } from './inbox.ts';
-import { change } from './feed.ts';
+import { duplicateKey, finishSend, replies, sendGates, workspaces } from './inbox.ts';
 
 const leaseMs = 10_000;
 const requestTimeoutMs = 1_500;
@@ -62,6 +61,12 @@ async function runSend(workspace: string, owner: string) {
       } else {
         if (response.status === 429) {
           delay = Math.max(delay, retryAfterMs(response.headers.get('retry-after')) + 50);
+          // Preserve a cooldown longer than the lease even if the worker dies
+          // before rescheduling this reply.
+          await sendGates.updateOne(
+            { _id: workspace, owner },
+            { $max: { availableAt: new Date(Date.now() + delay) } },
+          );
         }
         permanentFailure = response.status >= 400 && response.status < 500 &&
           ![408, 425, 429].includes(response.status);
@@ -72,11 +77,7 @@ async function runSend(workspace: string, owner: string) {
     }
 
     if (providerId || permanentFailure) {
-      const status = providerId ? 'sent' : 'failed';
-      await replies.updateOne(pending, {
-        $set: { status, ...(providerId ? { providerId } : {}) },
-        $push: { changes: change('message.status', reply.contact, { client_ref: reply.clientRef, status }) },
-      });
+      await finishSend(reply, providerId);
     } else {
       await replies.updateOne(pending, {
         $set: { nextAttemptAt: new Date(Date.now() + Math.max(delay, backoff)) },

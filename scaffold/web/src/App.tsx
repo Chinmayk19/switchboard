@@ -19,26 +19,73 @@ function Brand() {
   return <div className="brand"><span className="brand-mark" aria-hidden="true">S</span><span>Switchboard<small>Support inbox</small></span></div>;
 }
 
+function Profile({ name, busy, error, onLogout }: {
+  name: string;
+  busy: boolean;
+  error: string;
+  onLogout: () => void;
+}) {
+  const menu = useRef<HTMLDetailsElement>(null);
+  return (
+    <details className="profile" ref={menu} onKeyDown={event => {
+      if (event.key !== 'Escape' || !menu.current?.open) return;
+      menu.current.open = false;
+      menu.current.querySelector('summary')?.focus();
+    }}>
+      <summary aria-label={name + ' profile'}>
+        <span className="agent-avatar" aria-hidden="true">{name.charAt(0)}</span>
+        <span className="account-name">{name}</span>
+      </summary>
+      <div className="profile-panel">
+        {error && <p role="alert">{error}</p>}
+        <button type="button" disabled={busy} onClick={onLogout}>{busy ? 'Logging out…' : 'Logout'}</button>
+      </div>
+    </details>
+  );
+}
+
 export function App() {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [workspace, setWorkspace] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError('');
     try {
-      const user = await request<Identity>('/api/me');
+      const user = await request<Identity>('/api/me', { signal });
+      if (signal?.aborted) return;
       setIdentity(user);
       setWorkspace(user.workspaces[0]?.id ?? '');
     } catch (error) {
-      if (!(error instanceof ApiError && error.status === 401)) setError(messageOf(error));
+      if (!signal?.aborted && !(error instanceof ApiError && error.status === 401)) setError(messageOf(error));
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const abort = new AbortController();
+    void load(abort.signal);
+    return () => abort.abort();
+  }, [load]);
+
+  async function logout() {
+    setLoggingOut(true);
+    setLogoutError('');
+    try {
+      await request('/auth/logout', { method: 'POST' });
+      // Unmounting Inbox closes its socket and discards workspace data and drafts.
+      setWorkspace('');
+      setIdentity(null);
+    } catch (error) {
+      setLogoutError(messageOf(error));
+    } finally {
+      setLoggingOut(false);
+    }
+  }
 
   if (!identity || !workspace) return (
     <main className="welcome">
@@ -46,10 +93,13 @@ export function App() {
         <Brand />
         <h1>{identity ? 'No workspace access' : 'Your team inbox'}</h1>
         {loading ? <p role="status">Checking your session...</p> : error ? <>
-          <p role="alert">{error}</p><button className="primary" onClick={load}>Try again</button>
+          <p role="alert">{error}</p><button className="primary" onClick={() => void load()}>Try again</button>
         </> : <>
           <p>{identity ? 'Sign in with an account that belongs to a workspace.' : 'Sign in to read and reply to customer messages.'}</p>
-          <a className="primary" href="/auth/login">Sign in</a>
+          {identity ? <>
+            {logoutError && <p role="alert">{logoutError}</p>}
+            <button className="primary" disabled={loggingOut} onClick={logout}>{loggingOut ? 'Logging out…' : 'Logout'}</button>
+          </> : <a className="primary" href="/auth/login">Sign in</a>}
         </>}
       </section>
     </main>
@@ -66,8 +116,7 @@ export function App() {
               {identity.workspaces.map(({ id }) => <option key={id} value={id}>{workspaceName(id)}</option>)}
             </select>
           </label>
-          <span className="agent-avatar" aria-hidden="true">{agentName(identity.sub).charAt(0)}</span>
-          <span className="account-name">{agentName(identity.sub)}</span>
+          <Profile name={agentName(identity.sub)} busy={loggingOut} error={logoutError} onLogout={logout} />
         </div>
       </header>
       <Inbox key={workspace} workspace={workspace} agent={identity.sub} />

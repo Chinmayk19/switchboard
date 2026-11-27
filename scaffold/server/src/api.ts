@@ -1,12 +1,8 @@
 import { Router, json, type Request, type Response } from 'express';
 import { isMember, readSession } from './auth.ts';
-import { config } from './config.ts';
 import { claimConversation, knownWorkspace, listConversations, listMessages, queueReply, setConversationClosed, type PageCursor } from './inbox.ts';
-import { route } from './http.ts';
+import { allowedOrigin, route } from './http.ts';
 import { nonempty } from './webhook.ts';
-
-const origins = new Set([new URL(config.webOrigin).origin, new URL(config.oidc.redirectUri).origin]);
-export const allowedOrigin = (origin: string | undefined) => !origin || origins.has(origin);
 
 function pagination(req: Request) {
   const limit = req.query.limit === undefined ? 30 : Number(req.query.limit);

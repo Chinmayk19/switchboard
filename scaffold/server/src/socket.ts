@@ -1,6 +1,6 @@
 import type { Server } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
-import { allowedOrigin } from './api.ts';
+import { allowedOrigin } from './http.ts';
 import { isMember, readSession } from './auth.ts';
 import { changesAfter, latestSequence } from './feed.ts';
 import { knownWorkspace } from './inbox.ts';
@@ -40,13 +40,17 @@ export function attachWebSockets(server: Server) {
 function follow(ws: WebSocket, workspace: string, cursor: number, cookie: string | undefined) {
   let timer: NodeJS.Timeout | undefined;
   let alive = true;
+  async function stillAuthorized() {
+    const session = await readSession(cookie);
+    if (session && isMember(session, workspace)) return true;
+    ws.close(1008, 'Session ended');
+    return false;
+  }
   const heartbeat = setInterval(() => {
     if (!alive) { ws.terminate(); return; }
     alive = false;
     ws.ping();
-    void readSession(cookie).then(session => {
-      if (!session || !isMember(session, workspace)) ws.close(1008, 'Session expired');
-    }).catch(() => ws.close(1011, 'Session unavailable'));
+    void stillAuthorized().catch(() => ws.close(1011, 'Session unavailable'));
   }, 15_000);
   ws.on('pong', () => { alive = true; });
   ws.on('error', () => ws.terminate());
@@ -59,6 +63,7 @@ function follow(ws: WebSocket, workspace: string, cursor: number, cookie: string
   async function pump() {
     try {
       const batch = await changesAfter(workspace, cursor);
+      if (batch.length && !await stillAuthorized()) return;
       for (const event of batch) {
         if (ws.readyState !== WebSocket.OPEN) return;
         if (ws.bufferedAmount > 512 * 1024) { ws.close(1013, 'Reconnect to resume'); return; }
