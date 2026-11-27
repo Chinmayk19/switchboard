@@ -2,6 +2,7 @@ import { MongoServerError, type ObjectId } from 'mongodb';
 import { getDb } from './db.ts';
 import { config } from './config.ts';
 import { change, resetFeed, type Change } from './feed.ts';
+import { initNotes, notes } from './notes.ts';
 
 export type CarrierStatus = 'sent' | 'delivered' | 'failed';
 export type ReplyStatus = 'queued' | CarrierStatus;
@@ -50,7 +51,7 @@ const inbound = db.collection<Inbound>('inbound');
 const conversations = db.collection<Conversation>('conversations');
 export const replies = db.collection<Reply>('replies');
 export const sendGates = db.collection<SendGate>('send_gates');
-export const changeSources = [inbound, conversations, replies].map(collection => collection.collectionName);
+export const changeSources = [inbound, conversations, replies, notes].map(collection => collection.collectionName);
 
 export const workspaces = Object.keys(config.pigeon.apiKeys);
 
@@ -60,6 +61,7 @@ export function knownWorkspace(value: unknown): value is string {
 
 export async function initModels() {
   await Promise.all([
+    initNotes(),
     inbound.createIndexes([
       { key: { workspace: 1, eventId: 1 }, unique: true },
       { key: { workspace: 1, messageId: 1 }, unique: true },
@@ -181,7 +183,7 @@ export async function finishSend(
 
 export async function setConversationClosed(workspace: string, contact: string, closed: boolean) {
   const key = { workspace, contact };
-  if (!await conversations.findOne(key) && !await inbound.findOne(key) && !await replies.findOne(key)) return false;
+  if (!await conversationExists(workspace, contact)) return false;
   const event = change('conversation.closed', contact, { closed });
   try {
     await conversations.updateOne(
@@ -197,6 +199,13 @@ export async function setConversationClosed(workspace: string, contact: string, 
     );
   }
   return true;
+}
+
+export async function conversationExists(workspace: string, contact: string) {
+  const scope = { workspace, contact };
+  const projection = { _id: 1 };
+  return Boolean(await conversations.findOne(scope, { projection }) || await inbound.findOne(scope, { projection }) ||
+    await replies.findOne(scope, { projection }));
 }
 
 interface ContactSnapshot {
@@ -225,7 +234,7 @@ export async function snapshot() {
 }
 
 export async function resetInbox() {
-  await Promise.all([inbound.deleteMany({}), conversations.deleteMany({}), replies.deleteMany({}), sendGates.deleteMany({})]);
+  await Promise.all([inbound.deleteMany({}), conversations.deleteMany({}), replies.deleteMany({}), sendGates.deleteMany({}), notes.deleteMany({})]);
   await resetFeed();
 }
 

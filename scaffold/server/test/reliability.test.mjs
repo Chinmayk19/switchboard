@@ -9,6 +9,7 @@ import { gzipSync } from 'node:zlib';
 import test from 'node:test';
 import { MongoClient } from 'mongodb';
 import WebSocket from 'ws';
+import { importShareCode, makeShareCode, openNote, sealNote } from '../../web/src/noteCrypto.ts';
 
 const workspace = 'ws_acme';
 const contact = '+14155550101';
@@ -277,4 +278,76 @@ test('webhook contract and distributed recovery', { timeout: 60_000 }, async t =
     const rejection = await once(expiredSocket, 'error');
     assert.match(rejection[0].message, /Unexpected server response: 401/);
   });
+
+  await t.test('stores only note envelopes and isolates them from the carrier and other workspaces', async () => {
+    async function signInAs(sub, id) {
+      const secret = Buffer.from(randomUUID().replaceAll('-', '')).toString('base64url');
+      await db.collection('sessions').insertOne({
+        _id: createHash('sha256').update(secret).digest('base64url'), sub, expiresAt: new Date(Date.now() + 60_000),
+        workspaces: [{ id, role: 'agent' }],
+      });
+      return { cookie: 'sb_session=' + secret };
+    }
+    const scope = { workspace, contact, author: 'note-author' };
+    const author = await signInAs(scope.author, workspace);
+    const teammate = await signInAs('note-reader', workspace);
+    const outsider = await signInAs('other-tenant', rateWorkspace);
+    const code = await makeShareCode(workspace);
+    const sender = await importShareCode(workspace, code);
+    const recipient = await importShareCode(workspace, code);
+    const plaintext = 'Private note only: do not contact this customer 🚫';
+    const envelope = await sealNote(plaintext, scope, sender);
+    const path = second.url + '/api/conversations/' + encodeURIComponent(contact) + '/notes?workspace=';
+    const post = (tenant, identity, payload) => fetch(path + tenant, {
+      method: 'POST', headers: { ...identity, 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const attemptsBefore = attempts.length;
+    assert.equal((await fetch(path + workspace)).status, 401);
+    assert.equal((await fetch(path + workspace, { headers: outsider })).status, 403);
+    assert.equal((await post(workspace, outsider, envelope)).status, 403);
+    assert.equal((await post(workspace, author, { ...envelope, text: plaintext })).status, 400);
+    assert.equal((await post(workspace, author, envelope)).status, 201);
+    assert.equal((await post(workspace, author, envelope)).status, 201);
+    assert.equal((await post(workspace, teammate, envelope)).status, 409);
+    const rows = await (await fetch(path + workspace, { headers: teammate })).json();
+    assert.equal(rows.items.length, 1);
+    const note = rows.items[0];
+    assert.equal(note.author, scope.author);
+    assert.equal(await openNote(note, scope, recipient), plaintext);
+    const otherRows = await (await fetch(path + rateWorkspace, { headers: outsider })).json();
+    assert.deepEqual(otherRows.items, []);
+    const stored = await db.collection('private_notes').findOne({ id: envelope.id });
+    for (const value of [plaintext, code, code.split('.')[2]]) assert.ok(!JSON.stringify(stored).includes(value));
+    const realtime = await eventually(() => db.collection('feed_events').findOne({ workspace, type: 'note.created' }));
+    assert.equal(realtime.contact, contact);
+    assert.ok(!JSON.stringify(realtime).includes(envelope.ciphertext));
+    assert.equal(await db.collection('replies').countDocuments(), 0);
+    assert.equal(attempts.length, attemptsBefore);
+    assert.equal((await grader(second.url, 'reset', {})).status, 200);
+    assert.equal(await db.collection('private_notes').countDocuments(), 0);
+  });
+});
+
+test('private note encryption interoperates between independent keys and detects tampering', async () => {
+  const scope = { workspace, contact, author: 'u_ben' };
+  const code = await makeShareCode(workspace);
+  const origin = await importShareCode(workspace, code);
+  const reader = await importShareCode(workspace, code);
+  assert.equal(origin.key.extractable, false);
+  await assert.rejects(crypto.subtle.exportKey('raw', reader.key));
+  await assert.rejects(importShareCode('ws_globex', code));
+  const text = 'Private line 🌱\nSecond line';
+  const envelope = await sealNote(text, scope, origin);
+  assert.equal(await openNote(envelope, scope, reader), text);
+  assert.notEqual((await sealNote(text, scope, origin)).iv, envelope.iv);
+  for (const key of ['ciphertext', 'iv']) {
+    const changed = (envelope[key][0] === 'A' ? 'B' : 'A') + envelope[key].slice(1);
+    await assert.rejects(openNote({ ...envelope, [key]: changed }, scope, reader));
+  }
+  for (const key of ['workspace', 'contact', 'author']) {
+    await assert.rejects(openNote(envelope, { ...scope, [key]: 'different' }, reader));
+  }
+  await assert.rejects(openNote({ ...envelope, id: randomUUID() }, scope, reader));
+  const other = await importShareCode(workspace, await makeShareCode(workspace));
+  await assert.rejects(openNote({ ...envelope, keyId: other.id }, scope, other));
 });
