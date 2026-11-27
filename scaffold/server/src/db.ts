@@ -1,13 +1,15 @@
-import { MongoClient, type Db } from 'mongodb';
-import { config } from './config.js';
+import { MongoClient } from 'mongodb';
+import { config } from './config.ts';
 
-let client: MongoClient | undefined;
+const client = new MongoClient(config.mongoUrl, {
+  serverSelectionTimeoutMS: 2000,
+  writeConcern: { w: 'majority', journal: true },
+});
 
-// Connects on first use. Call from anywhere: const db = await getDb();
-export async function getDb(): Promise<Db> {
-  if (!client) {
-    client = new MongoClient(config.mongoUrl);
-    await client.connect();
-  }
+export function getDb() {
   return client.db();
+}
+
+export async function connectDb() {
+  await client.connect();
 }
