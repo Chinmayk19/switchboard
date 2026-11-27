@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { config } from './config.ts';
 import { duplicateKey, finishSend, replies, sendGates, workspaces } from './inbox.ts';
 import { logFailure } from './http.ts';
+import { canSend } from './billing.ts';
 
 const leaseMs = 10_000;
 const requestTimeoutMs = 1_500;
@@ -19,7 +20,7 @@ async function runSend(workspace: string, owner: string) {
   const now = new Date();
   const leaseUntil = new Date(now.getTime() + leaseMs);
   const due = { workspace, status: 'queued' as const, nextAttemptAt: { $lte: now } };
-  if (!await replies.findOne(due, { projection: { _id: 1 } })) return;
+  if (!await replies.findOne(due, { projection: { _id: 1 } }) || !await canSend(workspace)) return;
   try {
     await sendGates.updateOne(
       { _id: workspace, availableAt: { $lte: now } },
@@ -38,7 +39,7 @@ async function runSend(workspace: string, owner: string) {
       { $inc: { attempts: 1 } },
       { sort: { nextAttemptAt: 1, _id: 1 }, returnDocument: 'after' },
     );
-    if (!reply || Date.now() + requestTimeoutMs >= leaseUntil.getTime()) return;
+    if (!reply || !await canSend(workspace) || Date.now() + requestTimeoutMs >= leaseUntil.getTime()) return;
 
     delay = spacingMs;
     const backoff = Math.min(8_000, 500 * 2 ** Math.min(reply.attempts - 1, 4));

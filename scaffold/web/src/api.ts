@@ -35,6 +35,7 @@ export class ApiError extends Error {
   constructor(status: number) {
     super(status === 401 ? 'Your session has expired. Sign in again.' :
       status === 403 ? 'You do not have access to this workspace.' :
+      status === 402 ? 'Payment is required. Ask a workspace admin to check billing.' :
       status === 409 ? 'Another agent has already claimed this conversation.' :
       'Switchboard could not complete the request. Try again.');
     this.status = status;

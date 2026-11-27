@@ -11,6 +11,8 @@ import { auth, initAuth } from './auth.ts';
 import { api } from './api.ts';
 import { initFeed, startFeed } from './feed.ts';
 import { attachWebSockets } from './socket.ts';
+import { receivePaybox, startBilling } from './billing.ts';
+import { billingRoutes } from './billingRoutes.ts';
 
 const app = express();
 app.disable('x-powered-by');
@@ -29,6 +31,9 @@ app.get('/healthz', route(async (_req, res) => {
 app.post('/webhooks/pigeon', route(async (req, res) => {
   res.sendStatus(await receiveWebhook(req, req.get('x-pigeon-signature'), req.get('x-pigeon-event-id')));
 }));
+app.post('/webhooks/paybox', route(async (req, res) => {
+  res.sendStatus(await receivePaybox(req, req.get('x-paybox-signature'), req.get('x-paybox-event-id')));
+}));
 
 const grader = express.Router();
 grader.use((req, res, next) => {
@@ -42,6 +47,7 @@ grader.use((req, res, next) => {
   next();
 });
 grader.use(express.json());
+grader.use('/billing', billingRoutes(true));
 
 grader.post('/reset', route(async (_req, res) => {
   await resetInbox();
@@ -58,8 +64,7 @@ grader.post('/reply', route(async (req, res) => {
     res.sendStatus(400);
     return;
   }
-  await queueReply(workspace, contact, text, client_ref);
-  res.sendStatus(202);
+  res.sendStatus(await queueReply(workspace, contact, text, client_ref) ? 202 : 402);
 }));
 
 grader.post('/claim', route(async (req, res) => {
@@ -92,4 +97,5 @@ server.listen(config.port, () => {
   console.log('Switchboard listening', server.address());
   startOutbox();
   startFeed(changeSources);
+  startBilling();
 });

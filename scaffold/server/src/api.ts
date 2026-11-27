@@ -4,6 +4,7 @@ import { claimConversation, conversationExists, knownWorkspace, listConversation
 import { allowedOrigin, route } from './http.ts';
 import { nonempty } from './webhook.ts';
 import { listNotes, saveNote, validEnvelope } from './notes.ts';
+import { billingRoutes } from './billingRoutes.ts';
 
 function pagination(req: Request) {
   const limit = req.query.limit === undefined ? 30 : Number(req.query.limit);
@@ -46,6 +47,7 @@ api.get('/me', (_req, res) => {
   const { sub, workspaces } = res.locals.identity;
   res.json({ sub, workspaces });
 });
+api.use('/billing', billingRoutes(false));
 
 api.use('/conversations', (req, res, next) => {
   const workspace = req.query.workspace;
@@ -98,8 +100,7 @@ api.post('/conversations/:contact/reply', json(), route(async (req, res) => {
     res.sendStatus(400);
     return;
   }
-  await queueReply(res.locals.workspace, req.params.contact, text, client_ref);
-  res.sendStatus(202);
+  res.sendStatus(await queueReply(res.locals.workspace, req.params.contact, text, client_ref) ? 202 : 402);
 }));
 
 for (const action of ['close', 'reopen'] as const) {
