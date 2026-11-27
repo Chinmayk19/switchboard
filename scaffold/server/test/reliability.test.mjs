@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import test from 'node:test';
 import { MongoClient } from 'mongodb';
 import WebSocket from 'ws';
@@ -27,11 +28,12 @@ async function eventually(check, timeout = 5000) {
   assert.fail('Condition did not become true within ' + timeout + ' ms');
 }
 
-function webhook(url, body, { age = 0, signWith = secret, signature, eventId = body.id, signBody } = {}) {
+function webhook(url, body, { age = 0, signWith = secret, signature, eventId = body.id, signBody, encoding } = {}) {
   const bytes = Buffer.isBuffer(body) ? body : Buffer.from(JSON.stringify(body));
   const timestamp = Math.floor(Date.now() / 1000) - age;
   const mac = createHmac('sha256', signWith).update(timestamp + '.').update(signBody ?? bytes).digest('hex');
   const headers = { 'content-type': 'application/json' };
+  if (encoding) headers['content-encoding'] = encoding;
   if (eventId) headers['x-pigeon-event-id'] = eventId;
   if (signature !== null) headers['x-pigeon-signature'] = signature ?? 't=' + timestamp + ',v1=' + mac;
   return fetch(url + '/webhooks/pigeon', { method: 'POST', headers, body: bytes });
@@ -125,6 +127,7 @@ test('webhook contract and distributed recovery', { timeout: 60_000 }, async t =
     const unknownType = { type: 'carrier.new_event' };
     const invalidUtf8 = Buffer.from(JSON.stringify({ ...inbound, data: { ...inbound.data, text: '^' } }));
     invalidUtf8[invalidUtf8.indexOf('^')] = 0xff;
+    const compressed = gzipSync(JSON.stringify(inbound));
     const cases = [
       [inbound, { signature: null }, 401],
       [inbound, { signature: 't=broken,v1=xyz' }, 401],
@@ -133,6 +136,8 @@ test('webhook contract and distributed recovery', { timeout: 60_000 }, async t =
       [inbound, { age: 301 }, 401],
       [Buffer.from('{'), {}, 400],
       [invalidUtf8, { eventId: inbound.id }, 400],
+      [compressed, { encoding: 'gzip', signWith: 'wrong' }, 401],
+      [compressed, { encoding: 'gzip' }, 400],
       [unknownType, {}, 204],
       [event(inbound.data, inbound.type, 'unknown'), {}, 204],
       [nullRef, {}, 204],
@@ -222,5 +227,54 @@ test('webhook contract and distributed recovery', { timeout: 60_000 }, async t =
     assert.deepEqual(frames.map(frame => frame.message_id), ['stranded', 'pmsg_next']);
     assert.deepEqual(frames.map(frame => frame.seq), [claimedHead.seq, claimedHead.seq + 1]);
     ws.close();
+  });
+
+  await t.test('resets old workspace data without stranding live cursors and revokes logout access', async () => {
+    const session = Buffer.from(randomUUID().replaceAll('-', '')).toString('base64url');
+    const sessionId = createHash('sha256').update(session).digest('base64url');
+    await db.collection('sessions').insertOne({
+      _id: sessionId, sub: 'test', expiresAt: new Date(Date.now() + 60_000),
+      workspaces: [{ id: workspace, role: 'agent' }],
+    });
+    const headers = { cookie: 'sb_session=' + session };
+    const other = second.url + '/api/conversations/' + encodeURIComponent(contact) + '/claim?workspace=ws_globex';
+    assert.equal((await fetch(other, { method: 'POST', headers })).status, 403);
+    assert.equal((await fetch(second.url + '/__grader/snapshot')).status, 401);
+    const ws = new WebSocket(second.url.replace('http:', 'ws:') + '/ws?workspace=' + workspace, { headers });
+    sockets.add(ws);
+    const frames = [];
+    ws.on('message', message => frames.push(JSON.parse(message.toString())));
+    await once(ws, 'open');
+    const ready = await eventually(() => frames[0]);
+    assert.equal(ready.type, 'feed.ready');
+    assert.ok(ready.cursor > 0);
+    assert.equal((await grader(second.url, 'reset', {})).status, 200);
+    const snapshot = await (await grader(second.url, 'snapshot')).json();
+    for (const tenant of Object.values(snapshot.workspaces)) assert.deepEqual(tenant, { contacts: {}, outbound: {} });
+    assert.equal(await db.collection('feed_events').countDocuments(), 0);
+    assert.equal((await webhook(second.url, event({ message_id: 'after-reset', from: contact, text: 'New' }))).status, 204);
+    const fresh = await eventually(() => frames[1]);
+    assert.equal(fresh.message_id, 'after-reset');
+    assert.ok(fresh.seq > ready.cursor);
+    const logout = origin => fetch(second.url + '/auth/logout', { method: 'POST', headers: { ...headers, origin } });
+    assert.equal((await logout('https://outside.invalid')).status, 403);
+    assert.equal((await fetch(second.url + '/api/me', { headers })).status, 200);
+    const response = await logout('http://localhost:5173');
+    assert.equal(response.status, 204);
+    assert.match(response.headers.getSetCookie()[0], /^sb_session=;.*HttpOnly/i);
+    assert.equal((await fetch(second.url + '/api/me', { headers })).status, 401);
+    const closed = once(ws, 'close');
+    assert.equal((await webhook(second.url, event({ message_id: 'after-logout', from: contact, text: 'Private' }))).status, 204);
+    assert.equal((await closed)[0], 1008);
+    assert.equal(frames.length, 2);
+    await db.collection('sessions').insertOne({
+      _id: sessionId, sub: 'test', expiresAt: new Date(Date.now() - 1000),
+      workspaces: [{ id: workspace, role: 'agent' }],
+    });
+    assert.equal((await fetch(second.url + '/api/me', { headers })).status, 401);
+    const expiredSocket = new WebSocket(second.url.replace('http:', 'ws:') + '/ws?workspace=' + workspace, { headers });
+    sockets.add(expiredSocket);
+    const rejection = await once(expiredSocket, 'error');
+    assert.match(rejection[0].message, /Unexpected server response: 401/);
   });
 });

@@ -11,7 +11,7 @@ const env = (name: string, fallback: string) => process.env[name] ?? fallback;
 export const config = {
   port: Number(env('PORT', '4000')),
   webOrigin: env('WEB_ORIGIN', 'http://localhost:5173'),
-  graderToken: env('GRADER_TOKEN', 'grader-dev-token'),
+  graderToken: env('GRADER_TOKEN', ''),
   mongoUrl: env('MONGO_URL', 'mongodb://localhost:27017/switchboard'),
   redisUrl: env('REDIS_URL', 'redis://localhost:6379'),
   elasticsearchUrl: env('ELASTICSEARCH_URL', 'http://localhost:9200'),

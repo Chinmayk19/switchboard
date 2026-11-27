@@ -1,13 +1,13 @@
 {
   "profile": "full",
-  "startedAt": "2026-11-27T13:15:50.819Z",
+  "startedAt": "2026-11-27T13:35:17.439Z",
   "checks": [
     {
       "level": 1,
       "id": "inbound_complete",
       "max": 4,
       "got": 4,
-      "detail": "174 of 174 genuine messages stored"
+      "detail": "171 of 171 genuine messages stored"
     },
     {
       "level": 1,
@@ -91,7 +91,7 @@
       "id": "crash_inbound_complete",
       "max": 3,
       "got": 3,
-      "detail": "killed at 10 s, down 4 s: 160 of 160 genuine messages stored"
+      "detail": "killed at 12 s, down 4 s: 174 of 174 genuine messages stored"
     },
     {
       "level": 2,
@@ -133,7 +133,7 @@
       "id": "multi_inbound_complete",
       "max": 2,
       "got": 2,
-      "detail": "165 of 165 genuine messages stored"
+      "detail": "172 of 172 genuine messages stored"
     },
     {
       "level": 3,
@@ -224,7 +224,7 @@
       "id": "socket_replay",
       "max": 3,
       "got": 3,
-      "detail": "4 of 4 messages that arrived while disconnected were replayed after reconnecting with after=6; 0 frames at or before that seq were sent again"
+      "detail": "4 of 4 messages that arrived while disconnected were replayed after reconnecting with after=370; 0 frames at or before that seq were sent again"
     }
   ],
   "score": 75,
@@ -247,5 +247,5 @@
       "max": 15
     }
   },
-  "finishedAt": "2026-11-27T13:19:37.345Z"
+  "finishedAt": "2026-11-27T13:39:07.410Z"
 }

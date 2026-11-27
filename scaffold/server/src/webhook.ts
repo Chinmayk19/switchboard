@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
 import { config } from './config.ts';
 import { knownWorkspace, recordStatus, storeInbound } from './inbox.ts';
 
@@ -6,17 +7,26 @@ export function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-export function validSignature(signature: string | undefined, raw: Buffer) {
+export async function receiveWebhook(req: IncomingMessage, signature: string | undefined, eventId: string | undefined) {
   const match = /^t=(\d+),v1=([a-f\d]{64})$/i.exec(signature ?? '');
-  if (!match) return false;
+  if (!match) return 401;
 
   const [, timestamp, signatureHex] = match;
   const age = Math.floor(Date.now() / 1000) - Number(timestamp);
-  if (Math.abs(age) > 300) return false;
+  if (Math.abs(age) > 300) return 401;
 
-  const expected = createHmac('sha256', config.pigeon.webhookSecret)
-    .update(timestamp + '.').update(raw).digest();
-  return timingSafeEqual(expected, Buffer.from(signatureHex, 'hex'));
+  const hmac = createHmac('sha256', config.pigeon.webhookSecret).update(timestamp + '.');
+  const limit = 1024 * 1024;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    hmac.update(chunk);
+    size += chunk.length;
+    if (size <= limit) chunks.push(chunk);
+  }
+  if (!timingSafeEqual(hmac.digest(), Buffer.from(signatureHex, 'hex'))) return 401;
+  if (size > limit) return 413;
+  return applyWebhook(Buffer.concat(chunks), eventId);
 }
 
 export async function applyWebhook(raw: Buffer, eventId: string | undefined) {
