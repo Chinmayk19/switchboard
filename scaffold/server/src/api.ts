@@ -1,8 +1,9 @@
 import { Router, json, type Request, type Response } from 'express';
 import { isMember, readSession } from './auth.ts';
-import { claimConversation, knownWorkspace, listConversations, listMessages, queueReply, setConversationClosed, type PageCursor } from './inbox.ts';
+import { claimConversation, conversationExists, knownWorkspace, listConversations, listMessages, queueReply, setConversationClosed, type PageCursor } from './inbox.ts';
 import { allowedOrigin, route } from './http.ts';
 import { nonempty } from './webhook.ts';
+import { listNotes, saveNote, validEnvelope } from './notes.ts';
 
 function pagination(req: Request) {
   const limit = req.query.limit === undefined ? 30 : Number(req.query.limit);
@@ -68,6 +69,22 @@ api.get('/conversations/:contact/messages', route(async (req, res) => {
   if (!page) { res.sendStatus(400); return; }
   const rows = await listMessages(res.locals.workspace, req.params.contact, page.limit, page.after);
   sendPage(res, rows, page.limit, row => ({ at: row.at, key: row.id }));
+}));
+
+api.get('/conversations/:contact/notes', route(async (req, res) => {
+  const page = pagination(req);
+  if (!page) { res.sendStatus(400); return; }
+  const rows = await listNotes(res.locals.workspace, req.params.contact, page.limit, page.after);
+  sendPage(res, rows, page.limit, row => ({ at: row.at, key: row.id }));
+}));
+
+api.post('/conversations/:contact/notes', json({ limit: '18kb' }), route(async (req, res) => {
+  if (!validEnvelope(req.body)) { res.sendStatus(400); return; }
+  const { workspace, identity } = res.locals;
+  const { contact } = req.params;
+  if (!await conversationExists(workspace, contact)) { res.sendStatus(404); return; }
+  const stored = await saveNote(workspace, contact, identity.sub, req.body);
+  res.sendStatus(stored ? 201 : 409);
 }));
 
 api.post('/conversations/:contact/claim', route(async (req, res) => {

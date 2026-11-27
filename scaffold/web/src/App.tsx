@@ -1,6 +1,7 @@
 ﻿import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, endpoint, messageOf, request, type Conversation, type FeedEvent, type Identity, type Message } from './api';
 import { useFeed, usePages } from './hooks';
+import { PrivateNotes } from './PrivateNotes';
 import './styles.css';
 
 const contactKey = (item: Conversation) => item.contact;
@@ -123,12 +124,15 @@ export function App() {
           <Profile name={agentName(identity.sub)} busy={loggingOut} error={logoutError} onLogout={logout} />
         </div>
       </header>
-      <Inbox key={workspace} workspace={workspace} agent={identity.sub} onSessionEnded={clearSession} />
+      <Inbox key={workspace} workspace={workspace} agent={identity.sub} onSessionEnded={clearSession}
+        canGenerate={identity.workspaces.some(entry => entry.id === workspace && entry.role === 'admin')} />
     </main>
   );
 }
 
-function Inbox({ workspace, agent, onSessionEnded }: { workspace: string; agent: string; onSessionEnded: () => void }) {
+function Inbox({ workspace, agent, canGenerate, onSessionEnded }: {
+  workspace: string; agent: string; canGenerate: boolean; onSessionEnded: () => void;
+}) {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [revision, setRevision] = useState(0);
   const [messageStatuses, setMessageStatuses] = useState<Record<string, Message['status']>>({});
@@ -187,7 +191,7 @@ function Inbox({ workspace, agent, onSessionEnded }: { workspace: string; agent:
           {conversations.next && <button className="load-more" disabled={conversations.loadingMore} onClick={conversations.loadMore}>{conversations.loadingMore ? 'Loading...' : 'More conversations'}</button>}
         </div>
       </aside>
-      {conversation ? <Thread key={conversation.contact} {...{ workspace, agent, conversation, revision, messageStatuses, refresh }} onBack={() => setSelected(null)}
+      {conversation ? <Thread key={conversation.contact} {...{ workspace, agent, canGenerate, conversation, revision, messageStatuses, refresh }} onBack={() => setSelected(null)}
         onUpdate={patch => {
           setSelected(previous => previous?.contact === conversation.contact ? { ...previous, ...patch } : previous);
           conversations.setItems(previous => previous.map(item => item.contact === conversation.contact ? { ...item, ...patch } : item));
@@ -200,6 +204,7 @@ function Inbox({ workspace, agent, onSessionEnded }: { workspace: string; agent:
 interface ThreadProps {
   workspace: string;
   agent: string;
+  canGenerate: boolean;
   conversation: Conversation;
   revision: number;
   messageStatuses: Record<string, Message['status']>;
@@ -208,10 +213,11 @@ interface ThreadProps {
   onUpdate: (patch: Partial<Conversation>) => void;
 }
 
-function Thread({ workspace, agent, conversation, revision, messageStatuses, refresh, onBack, onUpdate }: ThreadProps) {
+function Thread({ workspace, agent, canGenerate, conversation, revision, messageStatuses, refresh, onBack, onUpdate }: ThreadProps) {
   const suffix = '/' + encodeURIComponent(conversation.contact);
   const history = usePages(endpoint(workspace, suffix + '/messages'), revision, messageKey);
   const [draft, setDraft] = useState('');
+  const [showNotes, setShowNotes] = useState(false);
   const [sending, setSending] = useState(false);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState('');
@@ -271,6 +277,11 @@ function Thread({ workspace, agent, conversation, revision, messageStatuses, ref
         <button disabled={acting} onClick={() => action(conversation.closed ? 'reopen' : 'close')}>{conversation.closed ? 'Reopen' : 'Close'}</button>
       </div>
     </header>
+    <nav className="thread-views" aria-label="Conversation views">
+      <button type="button" aria-pressed={!showNotes} onClick={() => setShowNotes(false)}>Customer messages</button>
+      <button type="button" aria-pressed={showNotes} onClick={() => setShowNotes(true)}>Private notes</button>
+    </nav>
+    {showNotes ? <PrivateNotes workspace={workspace} contact={conversation.contact} {...{ agent, canGenerate, revision }} /> : <>
     <div className="thread-scroll" ref={scroll} onScroll={() => {
       const node = scroll.current;
       if (node) stick.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
@@ -303,5 +314,6 @@ function Thread({ workspace, agent, conversation, revision, messageStatuses, ref
         <button className="primary" disabled={sending || !draft.trim()}>{sending ? 'Sending...' : 'Send reply'}</button>
       </div>
     </form>
+    </>}
   </section>;
 }
