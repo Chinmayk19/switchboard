@@ -1,6 +1,6 @@
 import type { Server } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
-import { allowedOrigin } from './http.ts';
+import { allowedOrigin, logFailure } from './http.ts';
 import { isMember, readSession } from './auth.ts';
 import { changesAfter, latestSequence } from './feed.ts';
 import { knownWorkspace } from './inbox.ts';
@@ -29,9 +29,12 @@ export function attachWebSockets(server: Server) {
       }
       const cursor = after === null ? await latestSequence(workspace) : Number(after);
       if (socket.destroyed) return;
-      sockets.handleUpgrade(req, socket, head, ws => follow(ws, workspace, cursor, req.headers.cookie));
+      sockets.handleUpgrade(req, socket, head, ws => {
+        if (after === null) ws.send(JSON.stringify({ type: 'feed.ready', cursor }));
+        follow(ws, workspace, cursor, req.headers.cookie);
+      });
     })().catch(error => {
-      console.error('WebSocket upgrade failed', error);
+      logFailure('WebSocket upgrade failed', error);
       if (!socket.destroyed) reject(503, 'Service Unavailable');
     });
   });
@@ -72,7 +75,7 @@ function follow(ws: WebSocket, workspace: string, cursor: number, cookie: string
       }
       if (ws.readyState === WebSocket.OPEN) timer = setTimeout(pump, batch.length === 100 ? 0 : 200);
     } catch (error) {
-      console.error('WebSocket feed read failed', error);
+      logFailure('WebSocket feed read failed', error);
       ws.close(1011, 'Feed unavailable');
     }
   }

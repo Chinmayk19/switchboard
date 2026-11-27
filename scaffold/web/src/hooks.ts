@@ -1,44 +1,52 @@
 import { useEffect, useRef, useState } from 'react';
 import { request, messageOf, type FeedEvent, type Page } from './api';
 
-export function useFeed(workspace: string, onEvent: (event: FeedEvent) => void, onConnect: () => void) {
+export function useFeed(workspace: string, onEvent: (event: FeedEvent) => void, onConnect: () => void, onSessionEnded: () => void) {
   const [live, setLive] = useState(false);
-  const listeners = useRef({ onEvent, onConnect });
-  listeners.current = { onEvent, onConnect };
+  const listeners = useRef({ onEvent, onConnect, onSessionEnded });
+  listeners.current = { onEvent, onConnect, onSessionEnded };
 
   useEffect(() => {
     let stopped = false;
     let socket: WebSocket | undefined;
     let reconnect: number | undefined;
-    let cursor = 0;
+    let cursor: number | undefined;
     let delay = 500;
 
     function connect() {
       const url = new URL('/ws', location.href);
       url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      url.search = new URLSearchParams({ workspace, after: String(cursor) }).toString();
-      socket = new WebSocket(url);
-      socket.onopen = () => {
+      url.searchParams.set('workspace', workspace);
+      if (cursor !== undefined) url.searchParams.set('after', String(cursor));
+      const connection = new WebSocket(url);
+      socket = connection;
+      connection.onopen = () => {
         if (stopped) return;
         setLive(true);
         delay = 500;
         listeners.current.onConnect();
       };
-      socket.onmessage = message => {
+      connection.onmessage = message => {
         if (stopped) return;
-        const event: FeedEvent = JSON.parse(message.data);
-        if (event.seq > cursor) {
+        const event: FeedEvent | { type: 'feed.ready'; cursor: number } = JSON.parse(message.data);
+        if ('cursor' in event) {
+          cursor ??= event.cursor;
+        } else if (event.seq > (cursor ?? 0)) {
           cursor = event.seq;
           listeners.current.onEvent(event);
         }
       };
-      socket.onclose = () => {
+      connection.onclose = event => {
         if (stopped) return;
         setLive(false);
+        if (event.code === 1008 && event.reason === 'Session ended') {
+          listeners.current.onSessionEnded();
+          return;
+        }
         reconnect = window.setTimeout(connect, delay);
         delay = Math.min(delay * 2, 10_000);
       };
-      socket.onerror = () => socket?.close();
+      connection.onerror = () => connection.close();
     }
 
     connect();

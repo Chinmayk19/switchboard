@@ -78,13 +78,17 @@ export function App() {
     try {
       await request('/auth/logout', { method: 'POST' });
       // Unmounting Inbox closes its socket and discards workspace data and drafts.
-      setWorkspace('');
-      setIdentity(null);
+      clearSession();
     } catch (error) {
       setLogoutError(messageOf(error));
     } finally {
       setLoggingOut(false);
     }
+  }
+
+  function clearSession() {
+    setWorkspace('');
+    setIdentity(null);
   }
 
   if (!identity || !workspace) return (
@@ -119,13 +123,13 @@ export function App() {
           <Profile name={agentName(identity.sub)} busy={loggingOut} error={logoutError} onLogout={logout} />
         </div>
       </header>
-      <Inbox key={workspace} workspace={workspace} agent={identity.sub} />
+      <Inbox key={workspace} workspace={workspace} agent={identity.sub} onSessionEnded={clearSession} />
     </main>
   );
 }
 
-function Inbox({ workspace, agent }: { workspace: string; agent: string }) {
-  const [selected, setSelected] = useState('');
+function Inbox({ workspace, agent, onSessionEnded }: { workspace: string; agent: string; onSessionEnded: () => void }) {
+  const [selected, setSelected] = useState<Conversation | null>(null);
   const [revision, setRevision] = useState(0);
   const [messageStatuses, setMessageStatuses] = useState<Record<string, Message['status']>>({});
   const refreshTimer = useRef<number | undefined>(undefined);
@@ -146,14 +150,15 @@ function Inbox({ workspace, agent }: { workspace: string; agent: string }) {
       setMessageStatuses(previous => ({ ...previous, [key]: event.status }));
     }
     if (event.assignee !== undefined || event.closed !== undefined) {
-      conversations.setItems(previous => previous.map(item => item.contact === event.contact ? {
-        ...item, assignee: event.assignee ?? item.assignee, closed: event.closed ?? item.closed,
-      } : item));
+      const update = (item: Conversation) => item.contact === event.contact
+        ? { ...item, assignee: event.assignee ?? item.assignee, closed: event.closed ?? item.closed } : item;
+      setSelected(previous => previous && update(previous));
+      conversations.setItems(previous => previous.map(update));
     }
     refresh();
   }
-  const live = useFeed(workspace, incoming, refresh);
-  const conversation = conversations.items.find(item => item.contact === selected);
+  const live = useFeed(workspace, incoming, refresh, onSessionEnded);
+  const conversation = conversations.items.find(item => item.contact === selected?.contact) ?? selected;
   return (
     <div className={'inbox-layout' + (conversation ? ' has-selection' : '')}>
       <aside className="sidebar">
@@ -168,7 +173,7 @@ function Inbox({ workspace, agent }: { workspace: string; agent: string }) {
           <ul aria-label="Conversations">
             {conversations.items.map(item => (
               <li key={item.contact}>
-                <button className={'conversation-row' + (item.contact === selected ? ' selected' : '')} aria-current={item.contact === selected ? 'true' : undefined} onClick={() => setSelected(item.contact)}>
+                <button className={'conversation-row' + (item.contact === selected?.contact ? ' selected' : '')} aria-current={item.contact === selected?.contact ? 'true' : undefined} onClick={() => setSelected(item)}>
                   <span className="contact-avatar" aria-hidden="true">{item.contact.slice(-2)}</span>
                   <span className="row-information">
                     <strong>{item.contact}</strong>
@@ -182,8 +187,11 @@ function Inbox({ workspace, agent }: { workspace: string; agent: string }) {
           {conversations.next && <button className="load-more" disabled={conversations.loadingMore} onClick={conversations.loadMore}>{conversations.loadingMore ? 'Loading...' : 'More conversations'}</button>}
         </div>
       </aside>
-      {conversation ? <Thread key={conversation.contact} {...{ workspace, agent, conversation, revision, messageStatuses, refresh }} onBack={() => setSelected('')}
-        onUpdate={patch => conversations.setItems(previous => previous.map(item => item.contact === conversation.contact ? { ...item, ...patch } : item))} />
+      {conversation ? <Thread key={conversation.contact} {...{ workspace, agent, conversation, revision, messageStatuses, refresh }} onBack={() => setSelected(null)}
+        onUpdate={patch => {
+          setSelected(previous => previous?.contact === conversation.contact ? { ...previous, ...patch } : previous);
+          conversations.setItems(previous => previous.map(item => item.contact === conversation.contact ? { ...item, ...patch } : item));
+        }} />
         : <section className="empty-thread"><div className="empty-icon" aria-hidden="true">···</div><h2>Select a conversation</h2><p>Read the history and reply to customers from here.</p></section>}
     </div>
   );

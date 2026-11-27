@@ -5,14 +5,15 @@ import { config } from './config.ts';
 import { connectDb, getDb } from './db.ts';
 import { changeSources, claimConversation, initModels, knownWorkspace, queueReply, resetInbox, snapshot } from './inbox.ts';
 import { startOutbox } from './outbox.ts';
-import { applyWebhook, nonempty, validSignature } from './webhook.ts';
-import { route } from './http.ts';
+import { nonempty, receiveWebhook } from './webhook.ts';
+import { logFailure, route } from './http.ts';
 import { auth, initAuth } from './auth.ts';
 import { api } from './api.ts';
 import { initFeed, startFeed } from './feed.ts';
 import { attachWebSockets } from './socket.ts';
 
 const app = express();
+app.disable('x-powered-by');
 app.use('/auth', auth);
 app.use('/api', api);
 
@@ -25,27 +26,13 @@ app.get('/healthz', route(async (_req, res) => {
   }
 }));
 
-app.post('/webhooks/pigeon',
-  (req, res, next) => {
-    if (!req.get('x-pigeon-signature')) {
-      res.sendStatus(401);
-      return;
-    }
-    next();
-  },
-  express.raw({ type: () => true, inflate: false }),
-  route(async (req, res) => {
-    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    if (!validSignature(req.get('x-pigeon-signature'), raw)) {
-      res.sendStatus(401);
-      return;
-    }
-    res.sendStatus(await applyWebhook(raw, req.get('x-pigeon-event-id')));
-  }),
-);
+app.post('/webhooks/pigeon', route(async (req, res) => {
+  res.sendStatus(await receiveWebhook(req, req.get('x-pigeon-signature'), req.get('x-pigeon-event-id')));
+}));
 
 const grader = express.Router();
 grader.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
   const token = Buffer.from(req.get('x-grader-token') ?? '');
   const expected = Buffer.from(config.graderToken);
   if (!expected.length || token.length !== expected.length || !timingSafeEqual(token, expected)) {
@@ -92,13 +79,13 @@ const handleError: ErrorRequestHandler = (error, _req, res, next) => {
     res.sendStatus(error.status);
     return;
   }
-  console.error(error);
+  logFailure('HTTP handler failed', error);
   res.sendStatus(503);
 };
 app.use(handleError);
 
 await connectDb();
-await Promise.all([initModels(), initAuth(), initFeed()]);
+await Promise.all([initModels(), initAuth(), initFeed(changeSources)]);
 const server = createServer(app);
 attachWebSockets(server);
 server.listen(config.port, () => {
