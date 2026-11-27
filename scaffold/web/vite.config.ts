@@ -1,19 +1,24 @@
-import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// The browser talks to one origin (:5173). These paths are passed through to
-// the server on :4000. Add or remove prefixes to suit your API.
-const server = 'http://localhost:4000';
+const root = fileURLToPath(new URL('../../', import.meta.url));
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5173,
-    proxy: {
-      '/api': server,
-      '/auth': server,
-      '/healthz': server,
-      '/ws': { target: server, ws: true },
+export default defineConfig(({ mode }) => {
+  const env = { ...loadEnv(mode, root, ''), ...process.env };
+  const server = 'http://localhost:' + (env.PORT || '4000');
+  const webPort = new URL(env.WEB_ORIGIN || 'http://localhost:5173').port;
+  return {
+    plugins: [react()],
+    server: {
+      port: Number(webPort || 5173),
+      strictPort: true,
+      proxy: {
+        '/api': server,
+        '/auth': server,
+        '/healthz': server,
+        '/ws': { target: server, ws: true },
+      },
     },
-  },
+  };
 });

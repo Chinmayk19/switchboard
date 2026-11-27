@@ -1,19 +1,20 @@
 import { timingSafeEqual } from 'node:crypto';
-import express, { type ErrorRequestHandler, type NextFunction, type Request, type Response } from 'express';
+import express, { type ErrorRequestHandler } from 'express';
 import { createServer } from 'node:http';
 import { config } from './config.ts';
 import { connectDb, getDb } from './db.ts';
-import { claimConversation, initModels, knownWorkspace, queueReply, resetInbox, snapshot } from './inbox.ts';
+import { changeSources, claimConversation, initModels, knownWorkspace, queueReply, resetInbox, snapshot } from './inbox.ts';
 import { startOutbox } from './outbox.ts';
 import { applyWebhook, nonempty, validSignature } from './webhook.ts';
+import { route } from './http.ts';
+import { auth, initAuth } from './auth.ts';
+import { api } from './api.ts';
+import { initFeed, startFeed } from './feed.ts';
+import { attachWebSockets } from './socket.ts';
 
 const app = express();
-
-function route(handler: (req: Request, res: Response) => Promise<void>) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    void handler(req, res).catch(next);
-  };
-}
+app.use('/auth', auth);
+app.use('/api', api);
 
 app.get('/healthz', route(async (_req, res) => {
   try {
@@ -97,9 +98,11 @@ const handleError: ErrorRequestHandler = (error, _req, res, next) => {
 app.use(handleError);
 
 await connectDb();
-await initModels();
+await Promise.all([initModels(), initAuth(), initFeed()]);
 const server = createServer(app);
+attachWebSockets(server);
 server.listen(config.port, () => {
   console.log('Switchboard listening', server.address());
   startOutbox();
+  startFeed(changeSources);
 });

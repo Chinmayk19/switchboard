@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { config } from './config.ts';
 import { duplicateKey, replies, sendGates, workspaces } from './inbox.ts';
+import { change } from './feed.ts';
 
 const leaseMs = 10_000;
 const requestTimeoutMs = 1_500;
@@ -70,10 +71,12 @@ async function runSend(workspace: string, owner: string) {
       // A timeout may follow acceptance. Every retry uses the same stored key.
     }
 
-    if (providerId) {
-      await replies.updateOne(pending, { $set: { status: 'sent', providerId } });
-    } else if (permanentFailure) {
-      await replies.updateOne(pending, { $set: { status: 'failed' } });
+    if (providerId || permanentFailure) {
+      const status = providerId ? 'sent' : 'failed';
+      await replies.updateOne(pending, {
+        $set: { status, ...(providerId ? { providerId } : {}) },
+        $push: { changes: change('message.status', reply.contact, { client_ref: reply.clientRef, status }) },
+      });
     } else {
       await replies.updateOne(pending, {
         $set: { nextAttemptAt: new Date(Date.now() + Math.max(delay, backoff)) },
