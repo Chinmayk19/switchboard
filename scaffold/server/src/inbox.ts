@@ -1,4 +1,4 @@
-import { MongoServerError } from 'mongodb';
+import { MongoServerError, type ObjectId } from 'mongodb';
 import { getDb } from './db.ts';
 import { config } from './config.ts';
 import { change, resetFeed, type Change } from './feed.ts';
@@ -32,6 +32,7 @@ interface Reply {
   text: string;
   status: ReplyStatus;
   providerId?: string;
+  earlyStatuses?: { providerId: string; status: CarrierStatus }[];
   attempts: number;
   nextAttemptAt: Date;
   createdAt?: Date;
@@ -123,19 +124,59 @@ export async function claimConversation(workspace: string, contact: string, agen
 }
 
 export async function recordStatus(workspace: string, clientRef: string, providerId: string, status: CarrierStatus) {
-  const reply = await replies.findOne({ workspace, clientRef }, { projection: { contact: 1 } });
+  const reply = await replies.findOne({ workspace, clientRef, attempts: { $gt: 0 } }, { projection: { contact: 1, providerId: 1 } });
   if (!reply) return;
+  if (!reply.providerId) {
+    // Correlate early callbacks only after a successful send response proves the ID.
+    const staged = await replies.updateOne(
+      { _id: reply._id, status: 'queued', providerId: { $exists: false } },
+      { $addToSet: { earlyStatuses: { providerId, status } } },
+    );
+    if (staged.matchedCount) return;
+  }
   await replies.updateOne(
     {
-      _id: reply._id, attempts: { $gt: 0 },
+      _id: reply._id, providerId,
       status: { $in: status === 'sent' ? ['queued'] : ['queued', 'sent'] },
-      $or: [{ providerId }, { providerId: { $exists: false } }],
     },
     {
       $set: { providerId, status },
       $push: { changes: change('message.status', reply.contact, { client_ref: clientRef, status }) },
     },
   );
+}
+
+export async function finishSend(
+  reply: { _id: ObjectId; attempts: number; contact: string; clientRef: string },
+  providerId?: string,
+) {
+  const event = change('message.status', reply.contact, { client_ref: reply.clientRef });
+  const status = providerId ? {
+    $reduce: {
+      input: { $ifNull: ['$earlyStatuses', []] },
+      initialValue: 'sent',
+      in: {
+        $cond: [
+          { $and: [
+            { $eq: ['$$value', 'sent'] },
+            { $eq: ['$$this.providerId', { $literal: providerId }] },
+            { $in: ['$$this.status', ['delivered', 'failed']] },
+          ] },
+          '$$this.status',
+          '$$value',
+        ],
+      },
+    },
+  } : 'failed';
+  await replies.updateOne({ _id: reply._id, status: 'queued', attempts: reply.attempts }, [
+    { $set: { status, ...(providerId ? { providerId: { $literal: providerId } } : {}) } },
+    { $set: { changes: {
+      $concatArrays: [{ $ifNull: ['$changes', []] }, [
+        { $mergeObjects: [{ $literal: event }, { status: '$status' }] },
+      ]],
+    } } },
+    { $unset: 'earlyStatuses' },
+  ]);
 }
 
 export async function setConversationClosed(workspace: string, contact: string, closed: boolean) {

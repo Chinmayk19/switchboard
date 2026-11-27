@@ -22,7 +22,7 @@ export function validSignature(signature: string | undefined, raw: Buffer) {
 export async function applyWebhook(raw: Buffer, eventId: string | undefined) {
   let event;
   try {
-    event = JSON.parse(raw.toString('utf8'));
+    event = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw));
   } catch {
     return 400;
   }
@@ -35,7 +35,8 @@ export async function applyWebhook(raw: Buffer, eventId: string | undefined) {
   const { workspace, data } = event;
   if (event.type === 'message.status') {
     const { status, client_ref, message_id } = data;
-    if (!nonempty(client_ref) || !['sent', 'delivered', 'failed'].includes(status)) return 400;
+    if (!['sent', 'delivered', 'failed'].includes(status)) return 400;
+    if (!nonempty(client_ref)) return 204;
     await recordStatus(workspace, client_ref, message_id, status);
   } else {
     const occurredAt = new Date(typeof event.occurred_at === 'string' ? event.occurred_at : NaN);
